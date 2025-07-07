@@ -1,0 +1,284 @@
+# ===============================
+# CONFIGURATION
+# ===============================
+
+$alertThresholdMinutes = 15    # Highlight and alert if a sync step exceeds this many minutes
+$maxIdleThresholdMinutes = 30 # Alert if the last step ended more than this many minutes ago
+$reportFolder = "C:\Automation"  # Folder where reports and logs are stored
+$jsonFilePath = Join-Path $reportFolder "sync_history.json"  # Path to sync history JSON log
+$htmlReportPath = Join-Path $reportFolder ("AADSyncReport_{0}.html" -f (Get-Date -Format 'yyyyMMdd'))  # Daily report path
+
+# Email settings (customize these values)
+$smtpServer = "smtp.office365.com"        # SMTP server hostname
+$smtpPort = 587                           # SMTP port for secure submission (STARTTLS)
+$smtpFrom = "sync-monitor@domain.com"     # From email address
+$smtpTo = "dl@domain.com"                 # Recipient email address or distribution list
+$subject = "AADConnect Sync Alert - $(Get-Date -Format 'yyyy-MM-dd')"
+
+# ===============================
+# FUNCTIONS
+# ===============================
+
+function Get-RunSteps {
+    param (
+        [object]$Connector
+    )
+
+    $steps = @()
+    $runProfiles = Get-ADSyncRunProfileResult -ConnectorId $Connector.Identifier |
+        Sort-Object RunNumber, CurrentStepNumber -Descending
+
+    $seen = @{}
+
+    foreach ($run in $runProfiles) {
+        $profile = $run.RunProfileName
+        if (-not $seen.ContainsKey($profile)) {
+            $seen[$profile] = $true
+
+            $start = $run.StartDate.ToLocalTime()
+            $end = $run.EndDate.ToLocalTime()
+            $duration = 0
+            if ($start -and $end) {
+                $duration = [math]::Round(($end - $start).TotalMinutes, 2)
+            }
+
+            $steps += [pscustomobject]@{
+                Connector   = $Connector.Name
+                Profile     = $profile
+                StartTime   = $start
+                EndTime     = $end
+                DurationMin = $duration
+                Result      = $run.Result
+            }
+        }
+
+        if ($seen.Count -ge 3) { break }
+    }
+
+    return $steps
+}
+
+function CreateHtmlRow {
+    param ($stat)
+
+    $rowStyle = ""
+    if ($stat.'Sync Duration (min)' -gt $alertThresholdMinutes) {
+        $rowStyle = " style='background-color: #fff3cd;'"  # Yellow
+    }
+    if ($stat.'End Time' -lt (Get-Date).AddMinutes(-$maxIdleThresholdMinutes)) {
+        $rowStyle = " style='background-color: #f8d7da;'"  # Red
+    }
+
+    return @"
+    <tr$rowStyle>
+        <td>$($stat.Connector)</td>
+        <td>$($stat.Type)</td>
+        <td>$($stat.Step)</td>
+        <td>$($stat.Result)</td>
+        <td>$($stat.'Start Time')</td>
+        <td>$($stat.'End Time')</td>
+        <td>$($stat.'Sync Duration (min)')</td>
+        <td>$($stat.LastModified)</td>
+        <td>$($stat.'Total Objects')</td>
+        <td>$($stat.'Objects Imported')</td>
+        <td>$($stat.'Objects Exported')</td>
+        <td>$($stat.'Objects Exported Delete')</td>
+    </tr>
+"@
+}
+
+function GenerateHtmlTableRows ($stats) {
+    if ($stats) {
+        $rows = ""
+        foreach ($s in $stats) {
+            $rows += CreateHtmlRow $s
+        }
+        return $rows
+    } else {
+        return "<tr><td colspan='12'>No stats available.</td></tr>"
+    }
+}
+
+# ===============================
+# START MONITORING
+# ===============================
+
+Import-Module 'ADSync' -ErrorAction Stop
+
+$scheduler = Get-ADSyncScheduler
+if ($scheduler.SyncCycleInProgress) {
+    Write-Output "A sync cycle is currently in progress. Skipping monitoring script run."
+    return
+}
+
+$today = (Get-Date).Date
+$yesterday = $today.AddDays(-1)
+$connectors = Get-ADSyncConnector
+$allSummaries = @()
+$shouldSendEmail = $false
+
+foreach ($connector in $connectors) {
+    try {
+        $latestRunStats = Get-ADSyncConnectorStatistics -ConnectorName $connector.Name |
+            Sort-Object -Property LastRunStartTime -Descending |
+            Select-Object -First 1
+
+        $runSteps = Get-RunSteps -Connector $connector
+
+        foreach ($step in $runSteps) {
+            $typeLabel = if ($connector.ListName -like "*Azure*") { "Cloud" } else { "Local" }
+
+            $summary = @{
+                'Timestamp'              = $today
+                'Connector'              = $connector.Name
+                'Type'                   = $typeLabel
+                'Step'                   = $step.Profile
+                'Result'                 = $step.Result
+                'Start Time'             = $step.StartTime
+                'End Time'               = $step.EndTime
+                'Sync Duration (min)'    = $step.DurationMin
+                'LastModified'           = $connector.LastModificationTime.ToLocalTime()
+                'Total Objects'          = $latestRunStats.TotalConnectors
+                'Objects Imported'       = ($latestRunStats.ImportUpdates + $latestRunStats.ImportAdds + $latestRunStats.ImportDeletes)
+                'Objects Exported'       = ($latestRunStats.ExportAdds + $latestRunStats.ExportUpdates)
+                'Objects Exported Delete'= $latestRunStats.ExportDeletes
+            }
+
+            if ($step.DurationMin -gt $alertThresholdMinutes) {
+                $shouldSendEmail = $true
+            }
+
+            if ($step.EndTime -lt (Get-Date).AddMinutes(-$maxIdleThresholdMinutes)) {
+                $shouldSendEmail = $true
+            }
+
+            $allSummaries += $summary
+        }
+    } catch {
+        Write-Warning "Failed to process connector $($connector.Name): $_"
+    }
+}
+
+# ===============================
+# UPDATE HISTORY (NO DUPLICATES)
+# ===============================
+
+if (-not (Test-Path $reportFolder)) {
+    New-Item -ItemType Directory -Path $reportFolder | Out-Null
+}
+
+if (Test-Path $jsonFilePath) {
+    $historyData = Get-Content $jsonFilePath | ConvertFrom-Json
+} else {
+    $historyData = @()
+}
+
+if ($historyData -isnot [System.Collections.IEnumerable]) {
+    $historyData = @($historyData)
+}
+
+$existingKeys = @{}
+foreach ($entry in $historyData) {
+    $key = "$($entry.Connector)|$($entry.Step)|$([datetime]$entry.Timestamp).ToString('yyyy-MM-dd')"
+    $existingKeys[$key] = $true
+}
+
+$uniqueNewSummaries = @()
+foreach ($summary in $allSummaries) {
+    $key = "$($summary.Connector)|$($summary.Step)|$($summary.Timestamp.ToString('yyyy-MM-dd'))"
+    if (-not $existingKeys.ContainsKey($key)) {
+        $uniqueNewSummaries += $summary
+        $existingKeys[$key] = $true
+    }
+}
+
+$historyData += $uniqueNewSummaries
+$historyData | ConvertTo-Json -Depth 5 | Set-Content $jsonFilePath
+
+$todayStats = $historyData | Where-Object { ([datetime]$_.'Timestamp').Date -eq $today }
+$yesterdayStats = $historyData | Where-Object { ([datetime]$_.'Timestamp').Date -eq $yesterday }
+
+# ===============================
+# BUILD HTML REPORT
+# ===============================
+
+$htmlContent = @"
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid black; padding: 6px; text-align: left; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <h2>AADConnect Sync Engine Stats</h2>
+
+    <h3>Today's Stats</h3>
+    <table>
+        <tr>
+            <th>Connector</th>
+            <th>Type</th>
+            <th>Step</th>
+            <th>Result</th>
+            <th>Start Time</th>
+            <th>End Time</th>
+            <th>Sync Duration (min)</th>
+            <th>Last Modified</th>
+            <th>Total Objects</th>
+            <th>Objects Imported</th>
+            <th>Objects Exported</th>
+            <th>Objects Exported Delete</th>
+        </tr>
+        $(GenerateHtmlTableRows $todayStats)
+    </table>
+
+    <h3>Yesterday's Stats</h3>
+    <table>
+        <tr>
+            <th>Connector</th>
+            <th>Type</th>
+            <th>Step</th>
+            <th>Result</th>
+            <th>Start Time</th>
+            <th>End Time</th>
+            <th>Sync Duration (min)</th>
+            <th>Last Modified</th>
+            <th>Total Objects</th>
+            <th>Objects Imported</th>
+            <th>Objects Exported</th>
+            <th>Objects Exported Delete</th>
+        </tr>
+        $(GenerateHtmlTableRows $yesterdayStats)
+    </table>
+</body>
+</html>
+"@
+
+$htmlContent | Out-File -FilePath $htmlReportPath -Encoding UTF8
+Write-Output "HTML report saved to: $htmlReportPath"
+
+# ===============================
+# EMAIL ALERT (CONDITIONAL)
+# ===============================
+
+if ($shouldSendEmail) {
+    try {
+        #$credential = Get-Credential
+        Send-MailMessage -From $smtpFrom `
+                         -To $smtpTo `
+                         -Subject $subject `
+                         -BodyAsHtml $htmlContent `
+                         -SmtpServer $smtpServer `
+                         -Port $smtpPort `
+                         -UseSsl `
+                         #-Credential $credential
+
+        Write-Output "Alert email sent. A sync step exceeded $alertThresholdMinutes minutes or ran more than $maxIdleThresholdMinutes minutes ago."
+    } catch {
+        Write-Warning "Failed to send email: $_"
+    }
+} else {
+    Write-Output "No sync step exceeded $alertThresholdMinutes minutes or went idle more than $maxIdleThresholdMinutes minutes. Email not sent."
+}
