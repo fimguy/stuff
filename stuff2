@@ -1,0 +1,7 @@
+AuditLogs
+| where LoggedByService == "Conditional Access"
+| project
+    ActivityDateTime,
+    InitiatedBy.user.userPrincipalName,
+    TargetResources[0].displayName,
+    ActivityDisplayName
