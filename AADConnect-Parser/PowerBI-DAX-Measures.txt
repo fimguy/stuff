@@ -1,0 +1,112 @@
+# Power BI DAX Measures for AAD Connect Analysis
+# Copy and paste these measures into Power BI Desktop
+
+# Create these calculated measures in Power BI:
+
+# 1. Total Export Errors
+Total Export Errors = COUNTA(ExportErrors[CsGuid])
+
+# 2. Error Rate Percentage
+Error Rate % = 
+DIVIDE(
+    [Total Export Errors],
+    SUM(RunStepResults[ExportFailure]),
+    0
+) * 100
+
+# 3. Average Step Duration
+Average Step Duration (Seconds) = AVERAGE(RunStepResults[DurationSeconds])
+
+# 4. Steps with Errors
+Steps with Errors = 
+CALCULATE(
+    DISTINCTCOUNT(RunStepResults[StepNumber]),
+    RunStepResults[ExportFailure] > 0
+)
+
+# 5. Most Common Error Type
+Most Common Error = 
+TOPN(
+    1,
+    VALUES(ExportErrors[ErrorType]),
+    CALCULATE(COUNTA(ExportErrors[CsGuid]))
+)[ErrorType]
+
+# 6. Users Affected
+Users Affected = DISTINCTCOUNT(ExportErrors[UserName])
+
+# 7. Service Accounts Affected
+Service Accounts Affected = 
+CALCULATE(
+    DISTINCTCOUNT(ExportErrors[UserName]),
+    ExportErrors[UserType] = "Service Account"
+)
+
+# 8. Regular Users Affected
+Regular Users Affected = 
+CALCULATE(
+    DISTINCTCOUNT(ExportErrors[UserName]),
+    ExportErrors[UserType] = "Regular User"
+)
+
+# 9. High Retry Count Errors
+High Retry Errors = 
+CALCULATE(
+    COUNTA(ExportErrors[CsGuid]),
+    ExportErrors[RetryCount] > 10000
+)
+
+# 10. Recent Errors (Last 30 Days)
+Recent Errors = 
+CALCULATE(
+    COUNTA(ExportErrors[CsGuid]),
+    ExportErrors[DateOccurred] >= TODAY() - 30
+)
+
+# 11. Success Rate
+Success Rate % = 
+VAR TotalSteps = COUNTA(RunStepResults[StepNumber])
+VAR ErrorSteps = [Steps with Errors]
+RETURN
+DIVIDE(TotalSteps - ErrorSteps, TotalSteps, 0) * 100
+
+# 12. Domain Distribution
+Domain Count = DISTINCTCOUNT(ExportErrors[Domain])
+
+# 13. Error Trend (Month over Month)
+Error Trend MoM = 
+VAR CurrentMonth = [Total Export Errors]
+VAR PreviousMonth = 
+CALCULATE(
+    [Total Export Errors],
+    DATEADD(ExportErrors[DateOccurred], -1, MONTH)
+)
+RETURN
+DIVIDE(CurrentMonth - PreviousMonth, PreviousMonth, 0) * 100
+
+# 14. Time to First Error (Days)
+Days Since First Error = 
+DATEDIFF(
+    MIN(ExportErrors[FirstOccurred]),
+    MAX(ExportErrors[DateOccurred]),
+    DAY
+)
+
+# 15. Error Persistence Score
+Error Persistence Score = 
+AVERAGEX(
+    VALUES(ExportErrors[CsGuid]),
+    CALCULATE(MAX(ExportErrors[RetryCount]))
+)
+
+# Color coding suggestions for visuals:
+# - Green: Success/Normal operations
+# - Red: Errors/Failures 
+# - Orange: Warnings/High retry counts
+# - Blue: Information/Metrics
+
+# Conditional formatting for tables:
+# RetryCount > 50000: Red background
+# RetryCount > 20000: Orange background
+# UserType = "Service Account": Gray text
+# ErrorType = "permission-issue": Red text
