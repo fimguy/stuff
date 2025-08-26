@@ -133,35 +133,83 @@ try {
     if ($ExportToCSV) {
         Write-Host "`nExporting to CSV files..." -ForegroundColor Yellow
         
-        # Export run step results
+        # Export run step results - always create the file
         $runStepCsvPath = Join-Path $OutputPath "RunStepResults.csv"
-        $runStepResults | Export-Csv -Path $runStepCsvPath -NoTypeInformation -Encoding UTF8
+        if ($runStepResults.Count -eq 0) {
+            # Create empty CSV with headers for Power BI compatibility
+            $emptyRunStep = [PSCustomObject]@{
+                RunHistoryId = $null
+                StepHistoryId = $null
+                StepNumber = $null
+                StepResult = $null
+                StartDate = $null
+                EndDate = $null
+                StageNoChange = $null
+                StageAdd = $null
+                StageUpdate = $null
+                StageRename = $null
+                StageDelete = $null
+                StageDeleteAdd = $null
+                StageFailure = $null
+                ExportFailure = $null
+                ConnectorFlow = $null
+                FlowFailure = $null
+                DurationSeconds = $null
+            }
+            @($emptyRunStep) | Export-Csv -Path $runStepCsvPath -NoTypeInformation -Encoding UTF8
+        } else {
+            $runStepResults | Export-Csv -Path $runStepCsvPath -NoTypeInformation -Encoding UTF8
+        }
         Write-Host "Run Step Results exported to: $runStepCsvPath" -ForegroundColor Green
         
-        # Export export errors
-        if ($exportErrors.Count -gt 0) {
-            $errorsCsvPath = Join-Path $OutputPath "ExportErrors.csv"
+        # Export export errors - always create the file
+        $errorsCsvPath = Join-Path $OutputPath "ExportErrors.csv"
+        if ($exportErrors.Count -eq 0) {
+            # Create empty CSV with headers for Power BI compatibility
+            $emptyError = [PSCustomObject]@{
+                RunHistoryId = $null
+                StepHistoryId = $null
+                StepNumber = $null
+                CsGuid = $null
+                DistinguishedName = $null
+                DateOccurred = $null
+                FirstOccurred = $null
+                RetryCount = $null
+                ErrorType = $null
+                ErrorCode = $null
+                ErrorLiteral = $null
+                ServerErrorDetail = $null
+            }
+            @($emptyError) | Export-Csv -Path $errorsCsvPath -NoTypeInformation -Encoding UTF8
+        } else {
             $exportErrors | Export-Csv -Path $errorsCsvPath -NoTypeInformation -Encoding UTF8
-            Write-Host "Export Errors exported to: $errorsCsvPath" -ForegroundColor Green
         }
+        Write-Host "Export Errors exported to: $errorsCsvPath" -ForegroundColor Green
         
-        # Create error summary
-        $errorSummary = $exportErrors | Group-Object ErrorType | Select-Object @{
-            Name = 'ErrorType'
-            Expression = { $_.Name }
-        }, @{
-            Name = 'Count'
-            Expression = { $_.Count }
-        }, @{
-            Name = 'Percentage'
-            Expression = { [math]::Round(($_.Count / $totalErrors) * 100, 2) }
-        }
-        
-        if ($errorSummary) {
-            $summaryCsvPath = Join-Path $OutputPath "ErrorSummary.csv"
+        # Create error summary - always create the file
+        $summaryCsvPath = Join-Path $OutputPath "ErrorSummary.csv"
+        if ($exportErrors.Count -gt 0) {
+            $errorSummary = $exportErrors | Group-Object ErrorType | Select-Object @{
+                Name = 'ErrorType'
+                Expression = { $_.Name }
+            }, @{
+                Name = 'Count'
+                Expression = { $_.Count }
+            }, @{
+                Name = 'Percentage'
+                Expression = { [math]::Round(($_.Count / $totalErrors) * 100, 2) }
+            }
             $errorSummary | Export-Csv -Path $summaryCsvPath -NoTypeInformation -Encoding UTF8
-            Write-Host "Error Summary exported to: $summaryCsvPath" -ForegroundColor Green
+        } else {
+            # Create empty error summary CSV with headers
+            $emptyErrorSummary = [PSCustomObject]@{
+                ErrorType = $null
+                Count = $null
+                Percentage = $null
+            }
+            @($emptyErrorSummary) | Export-Csv -Path $summaryCsvPath -NoTypeInformation -Encoding UTF8
         }
+        Write-Host "Error Summary exported to: $summaryCsvPath" -ForegroundColor Green
     }
     
     if ($ExportToJSON) {

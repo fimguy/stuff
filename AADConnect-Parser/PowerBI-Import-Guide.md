@@ -8,8 +8,7 @@ This guide walks you through importing the parsed AAD Connect XML data into Powe
 - Parsed CSV files from the PowerShell script
 
 ## Step 1: Data Import
-cd C:\AADConnect-Parser
-Run Export-ADSyncToolsRunHistory -TargetName today
+
 ### 1.1 Open Power BI Desktop
 - Launch Power BI Desktop
 - Select "Get data" from the Home ribbon

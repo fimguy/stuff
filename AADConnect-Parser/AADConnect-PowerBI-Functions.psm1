@@ -176,6 +176,65 @@ function Parse-DistinguishedNames {
     return $ExportErrors
 }
 
+# Function to ensure all required CSV files exist with proper headers for Power BI
+function Initialize-PowerBIDataModel {
+    param([string]$OutputPath)
+    
+    Write-Host "Ensuring all Power BI data model files exist..." -ForegroundColor Yellow
+    
+    # Define all required CSV files with their expected headers
+    $csvTemplates = @{
+        "RunStepResults.csv" = [PSCustomObject]@{
+            RunHistoryId = $null; StepHistoryId = $null; StepNumber = $null; StepResult = $null
+            StartDate = $null; EndDate = $null; StageNoChange = $null; StageAdd = $null
+            StageUpdate = $null; StageRename = $null; StageDelete = $null; StageDeleteAdd = $null
+            StageFailure = $null; ExportFailure = $null; ConnectorFlow = $null; FlowFailure = $null
+            DurationSeconds = $null; StartYear = $null; StartMonth = $null; StartDay = $null
+            StartHour = $null; StartDayOfWeek = $null; StartWeekOfYear = $null
+            EndYear = $null; EndMonth = $null; EndDay = $null; EndHour = $null
+        }
+        
+        "ExportErrors.csv" = [PSCustomObject]@{
+            RunHistoryId = $null; StepHistoryId = $null; StepNumber = $null; CsGuid = $null
+            DistinguishedName = $null; DateOccurred = $null; FirstOccurred = $null; RetryCount = $null
+            ErrorType = $null; ErrorCode = $null; ErrorLiteral = $null; ServerErrorDetail = $null
+        }
+        
+        "EnhancedExportErrors.csv" = [PSCustomObject]@{
+            RunHistoryId = $null; StepHistoryId = $null; StepNumber = $null; CsGuid = $null
+            DistinguishedName = $null; DateOccurred = $null; FirstOccurred = $null; RetryCount = $null
+            ErrorType = $null; ErrorCode = $null; ErrorLiteral = $null; ServerErrorDetail = $null
+            OccurredYear = $null; OccurredMonth = $null; OccurredDay = $null; OccurredHour = $null
+            OccurredDayOfWeek = $null; FirstOccurredYear = $null; FirstOccurredMonth = $null; FirstOccurredDay = $null
+            UserName = $null; OrganizationalUnit = $null; Domain = $null; UserType = $null
+        }
+        
+        "ErrorSummary.csv" = [PSCustomObject]@{
+            ErrorType = $null; Count = $null; Percentage = $null
+        }
+        
+        "ConnectionInfo.csv" = [PSCustomObject]@{
+            RunHistoryId = $null; StepNumber = $null; ConnectionResult = $null
+            Server = $null; ConnectionDate = $null; ConnectionServer = $null
+        }
+        
+        "AggregatedMetrics.csv" = [PSCustomObject]@{
+            Metric = "NoData"; Value = 0
+        }
+    }
+    
+    # Create any missing CSV files
+    foreach ($csvFile in $csvTemplates.Keys) {
+        $csvPath = Join-Path $OutputPath $csvFile
+        if (-not (Test-Path $csvPath)) {
+            Write-Host "Creating empty data model file: $csvFile" -ForegroundColor Gray
+            @($csvTemplates[$csvFile]) | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+        }
+    }
+    
+    Write-Host "Power BI data model initialization complete." -ForegroundColor Green
+}
+
 # Main execution function that combines all parsing operations
 function Invoke-CompleteXMLParsing {
     param(
@@ -185,6 +244,9 @@ function Invoke-CompleteXMLParsing {
     )
     
     Write-Host "Starting comprehensive XML parsing..." -ForegroundColor Green
+    
+    # Initialize Power BI data model files first
+    Initialize-PowerBIDataModel -OutputPath $OutputPath
     
     # Load and parse basic data - use relative path
     $parseScriptPath = Join-Path $PSScriptRoot "Parse-RunStepXML.ps1"
@@ -209,17 +271,70 @@ function Invoke-CompleteXMLParsing {
         # Generate aggregated metrics
         $aggregatedMetrics = Get-AggregatedMetrics -RunStepResults $enhancedRunSteps -ExportErrors $enhancedErrors
         
-        # Export enhanced data
+        # Export enhanced data - ensure CSV files are created even with no data
         $connectionCsvPath = Join-Path $OutputPath "ConnectionInfo.csv"
-        $connectionInfo | Export-Csv -Path $connectionCsvPath -NoTypeInformation -Encoding UTF8
+        if ($connectionInfo.Count -eq 0) {
+            # Create empty CSV with headers for Power BI compatibility
+            $emptyConnection = [PSCustomObject]@{
+                RunHistoryId = $null
+                StepNumber = $null
+                ConnectionResult = $null
+                Server = $null
+                ConnectionDate = $null
+                ConnectionServer = $null
+            }
+            @($emptyConnection) | Export-Csv -Path $connectionCsvPath -NoTypeInformation -Encoding UTF8
+        } else {
+            $connectionInfo | Export-Csv -Path $connectionCsvPath -NoTypeInformation -Encoding UTF8
+        }
         
         $metricsCsvPath = Join-Path $OutputPath "AggregatedMetrics.csv"
-        $aggregatedMetrics.GetEnumerator() | Select-Object @{Name='Metric';Expression={$_.Key}}, @{Name='Value';Expression={$_.Value}} | 
-            Export-Csv -Path $metricsCsvPath -NoTypeInformation -Encoding UTF8
+        if ($aggregatedMetrics.Count -eq 0) {
+            # Create empty metrics CSV with headers
+            $emptyMetrics = [PSCustomObject]@{
+                Metric = "NoData"
+                Value = 0
+            }
+            @($emptyMetrics) | Export-Csv -Path $metricsCsvPath -NoTypeInformation -Encoding UTF8
+        } else {
+            $aggregatedMetrics.GetEnumerator() | Select-Object @{Name='Metric';Expression={$_.Key}}, @{Name='Value';Expression={$_.Value}} | 
+                Export-Csv -Path $metricsCsvPath -NoTypeInformation -Encoding UTF8
+        }
         
         # Enhanced errors with user classification
         $enhancedErrorsCsvPath = Join-Path $OutputPath "EnhancedExportErrors.csv"
-        $enhancedErrors | Export-Csv -Path $enhancedErrorsCsvPath -NoTypeInformation -Encoding UTF8
+        if ($enhancedErrors.Count -eq 0) {
+            # Create empty enhanced errors CSV with all expected headers
+            $emptyError = [PSCustomObject]@{
+                RunHistoryId = $null
+                StepHistoryId = $null
+                StepNumber = $null
+                CsGuid = $null
+                DistinguishedName = $null
+                DateOccurred = $null
+                FirstOccurred = $null
+                RetryCount = $null
+                ErrorType = $null
+                ErrorCode = $null
+                ErrorLiteral = $null
+                ServerErrorDetail = $null
+                OccurredYear = $null
+                OccurredMonth = $null
+                OccurredDay = $null
+                OccurredHour = $null
+                OccurredDayOfWeek = $null
+                FirstOccurredYear = $null
+                FirstOccurredMonth = $null
+                FirstOccurredDay = $null
+                UserName = $null
+                OrganizationalUnit = $null
+                Domain = $null
+                UserType = $null
+            }
+            @($emptyError) | Export-Csv -Path $enhancedErrorsCsvPath -NoTypeInformation -Encoding UTF8
+        } else {
+            $enhancedErrors | Export-Csv -Path $enhancedErrorsCsvPath -NoTypeInformation -Encoding UTF8
+        }
         
         Write-Host "Enhanced analysis files created:" -ForegroundColor Green
         Write-Host "- Connection Info: $connectionCsvPath" -ForegroundColor White
@@ -236,4 +351,4 @@ function Invoke-CompleteXMLParsing {
 }
 
 # Export functions for module use
-Export-ModuleMember -Function Get-ConnectionInfo, Add-DateTimeMeasures, Get-AggregatedMetrics, Parse-DistinguishedNames, Invoke-CompleteXMLParsing
+Export-ModuleMember -Function Get-ConnectionInfo, Add-DateTimeMeasures, Get-AggregatedMetrics, Parse-DistinguishedNames, Invoke-CompleteXMLParsing, Initialize-PowerBIDataModel, Initialize-PowerBIDataModel
